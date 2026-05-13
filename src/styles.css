@@ -272,6 +272,14 @@ body.is-night .asset-card:hover {
   white-space: nowrap;
 }
 
+body.is-exploring .tool-rail,
+body.is-exploring .asset-dock,
+body.is-exploring .scene-controls {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px);
+}
+
 .asset-dock {
   position: absolute;
   left: 16px;
@@ -508,6 +516,12 @@ body.is-night .theme-tab.is-active {
 .icon-button:hover {
   border-color: rgb(221 91 50 / 0.24);
   background: rgb(255 255 255 / 0.64);
+}
+
+.icon-button.is-active {
+  border-color: rgb(221 91 50 / 0.42);
+  color: #ffffff;
+  background: var(--accent);
 }
 
 .icon-button:disabled {

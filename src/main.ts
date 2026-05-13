@@ -14,6 +14,14 @@ const MIN_HEIGHT = -2;
 const STORAGE_KEY = 'cozy-blocks-city-v1';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MUSIC_TRACKS = ['/audio/midnight-study-1.mp3', '/audio/midnight-study-2.mp3'] as const;
+const EXPLORE_SPAWN = { x: 48, z: 32 };
+const EXPLORE_AVATAR_RADIUS = 0.42;
+const EXPLORE_WALK_SPEED = 8.4;
+const EXPLORE_RUN_MULTIPLIER = 1.55;
+const EXPLORE_CAMERA_MIN_DISTANCE = 7;
+const EXPLORE_CAMERA_MAX_DISTANCE = 18;
+const EXPLORE_CAMERA_MIN_PITCH = 0.22;
+const EXPLORE_CAMERA_MAX_PITCH = 0.86;
 
 type VoxelType =
   | 'pavement'
@@ -36,7 +44,7 @@ type VoxelType =
   | 'leaf'
   | 'sakura';
 
-type Tool = 'paint' | 'erase' | 'sample' | 'stamp' | 'pan' | 'orbit' | 'zoom';
+type Tool = 'paint' | 'erase' | 'sample' | 'stamp' | 'pan' | 'orbit' | 'zoom' | 'explore';
 
 type Voxel = {
   x: number;
@@ -1125,8 +1133,13 @@ const redoStack: VoxelSnapshot[] = [];
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const worldMatrix = new THREE.Matrix4();
+const clock = new THREE.Clock();
 const materials = new Map<string, THREE.MeshStandardMaterial>();
 const renderLookup: THREE.Object3D[] = [];
+const exploreMoveKeys = new Set<string>();
+const exploreCameraTarget = new THREE.Vector3();
+const exploreDesiredCameraPosition = new THREE.Vector3();
+const exploreMoveVector = new THREE.Vector2();
 const SHADE_AMOUNTS = [-0.1, -0.07, -0.045, -0.02, 0, 0.035, 0.06] as const;
 const MAX_SCENE_LIGHTS = 128;
 
@@ -1150,6 +1163,10 @@ let currentMusicTrack = 0;
 let musicPlaying = false;
 let musicMuted = false;
 let musicAutoplayPending = true;
+let explorePointerDrag: { x: number; y: number } | null = null;
+let exploreYaw = Math.PI * 0.82;
+let explorePitch = 0.48;
+let exploreCameraDistance = 12;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -1281,6 +1298,10 @@ groundPlane.position.y = 0.02;
 groundPlane.userData.isGround = true;
 scene.add(groundPlane);
 
+const avatarGroup = createAvatar();
+avatarGroup.visible = false;
+scene.add(avatarGroup);
+
 createIcons({ icons });
 updateMusicControls();
 buildThemeTabs();
@@ -1298,23 +1319,44 @@ renderer.domElement.addEventListener('pointerenter', () => {
 });
 renderer.domElement.addEventListener('pointerleave', () => {
   pointerInCanvas = false;
+  explorePointerDrag = null;
   replaceTargetMode = false;
   hoverVoxel = null;
   previewMesh.visible = false;
   presetPreviewGroup.visible = false;
 });
 renderer.domElement.addEventListener('pointermove', (event) => {
+  if (activeTool === 'explore') {
+    updateExplorePointerDrag(event);
+    return;
+  }
+
   replaceTargetMode = isReplacePointerEvent(event);
   updatePointer(event);
   updateHover();
 });
 renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (activeTool === 'explore') {
+    if (event.button === 0) {
+      explorePointerDrag = { x: event.clientX, y: event.clientY };
+      renderer.domElement.style.cursor = 'grabbing';
+      event.preventDefault();
+    }
+    return;
+  }
+
   if (event.button === 0 || event.button === 2) {
     replaceTargetMode = isReplacePointerEvent(event);
     pointerDown = { x: event.clientX, y: event.clientY, button: event.button };
   }
 });
 renderer.domElement.addEventListener('pointerup', (event) => {
+  if (activeTool === 'explore') {
+    explorePointerDrag = null;
+    renderer.domElement.style.cursor = 'grab';
+    return;
+  }
+
   if (!pointerDown) {
     return;
   }
@@ -1332,6 +1374,18 @@ renderer.domElement.addEventListener('pointerup', (event) => {
   applyPointerEdit(button === 2 ? 'erase' : activeTool, replaceTargetMode);
 });
 renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
+renderer.domElement.addEventListener('wheel', (event) => {
+  if (activeTool !== 'explore') {
+    return;
+  }
+
+  exploreCameraDistance = THREE.MathUtils.clamp(
+    exploreCameraDistance + Math.sign(event.deltaY) * 0.8,
+    EXPLORE_CAMERA_MIN_DISTANCE,
+    EXPLORE_CAMERA_MAX_DISTANCE,
+  );
+  event.preventDefault();
+}, { passive: false });
 
 document.querySelector<HTMLButtonElement>('#placeTool')?.addEventListener('click', activatePlaceTool);
 document.querySelector<HTMLButtonElement>('#paintTool')?.addEventListener('click', () => setTool('paint'));
@@ -1340,6 +1394,7 @@ document.querySelector<HTMLButtonElement>('#sampleTool')?.addEventListener('clic
 document.querySelector<HTMLButtonElement>('#panTool')?.addEventListener('click', () => setTool('pan'));
 document.querySelector<HTMLButtonElement>('#orbitTool')?.addEventListener('click', () => setTool('orbit'));
 document.querySelector<HTMLButtonElement>('#zoomTool')?.addEventListener('click', () => setTool('zoom'));
+document.querySelector<HTMLButtonElement>('#exploreButton')?.addEventListener('click', toggleExploreMode);
 document.querySelector<HTMLButtonElement>('#undoButton')?.addEventListener('click', undo);
 document.querySelector<HTMLButtonElement>('#redoButton')?.addEventListener('click', redo);
 document.querySelector<HTMLButtonElement>('#newMapButton')?.addEventListener('click', createNewMap);
@@ -1434,6 +1489,10 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
+  if (handleExploreKeyDown(event)) {
+    return;
+  }
+
   if (event.key === 'Control' || event.key === 'Meta') {
     replaceTargetMode = true;
     updateHover();
@@ -1475,13 +1534,26 @@ window.addEventListener('keydown', (event) => {
   if (key === 'o') {
     setTool('orbit');
   }
+  if (key === 'v') {
+    setTool('explore');
+  }
 });
 
 window.addEventListener('keyup', (event) => {
+  const exploreKey = normalizeExploreKey(event.key);
+  if (exploreKey) {
+    exploreMoveKeys.delete(exploreKey);
+  }
+
   if (event.key === 'Control' || event.key === 'Meta') {
     replaceTargetMode = false;
     updateHover();
   }
+});
+
+window.addEventListener('blur', () => {
+  exploreMoveKeys.clear();
+  explorePointerDrag = null;
 });
 
 function keyFor(x: number, y: number, z: number): string {
@@ -1521,6 +1593,280 @@ function setVoxel(x: number, y: number, z: number, type: VoxelType): boolean {
 
 function removeVoxel(x: number, y: number, z: number): boolean {
   return voxelData.delete(keyFor(x, y, z));
+}
+
+function gridToWorldX(x: number): number {
+  return x - HALF_GRID + 0.5;
+}
+
+function gridToWorldZ(z: number): number {
+  return z - HALF_GRID + 0.5;
+}
+
+function worldToGridX(x: number): number {
+  return Math.floor(x + HALF_GRID);
+}
+
+function worldToGridZ(z: number): number {
+  return Math.floor(z + HALF_GRID);
+}
+
+function createAvatar(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'Explore Avatar';
+
+  const coatMaterial = new THREE.MeshStandardMaterial({ color: 0xdd5b32, roughness: 0.72 });
+  const scarfMaterial = new THREE.MeshStandardMaterial({ color: 0xf7c65a, roughness: 0.7 });
+  const headMaterial = new THREE.MeshStandardMaterial({ color: 0xf1d1a7, roughness: 0.76 });
+  const bootMaterial = new THREE.MeshStandardMaterial({ color: 0x3c342d, roughness: 0.86 });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.72, 1.08, 0.48), coatMaterial);
+  body.position.y = 0.95;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.52, 0.56), headMaterial);
+  head.position.y = 1.76;
+  head.castShadow = true;
+  head.receiveShadow = true;
+  group.add(head);
+
+  const scarf = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.16, 0.54), scarfMaterial);
+  scarf.position.y = 1.42;
+  scarf.castShadow = true;
+  group.add(scarf);
+
+  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.16), scarfMaterial);
+  nose.position.set(0, 1.78, -0.36);
+  nose.castShadow = true;
+  group.add(nose);
+
+  for (const x of [-0.22, 0.22]) {
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.28, 0.36), bootMaterial);
+    boot.position.set(x, 0.14, -0.02);
+    boot.castShadow = true;
+    boot.receiveShadow = true;
+    group.add(boot);
+  }
+
+  return group;
+}
+
+function getAvatarSurfaceYForCell(x: number, z: number): number | null {
+  if (!isInBounds(x, 0, z)) {
+    return null;
+  }
+
+  for (let y = 1; y <= MAX_HEIGHT; y += 1) {
+    if (getVoxel(x, y, z)) {
+      return null;
+    }
+  }
+
+  for (let y = 0; y >= MIN_HEIGHT; y -= 1) {
+    if (getVoxel(x, y, z)) {
+      return y + 1;
+    }
+  }
+
+  return 0;
+}
+
+function getAvatarSurfaceYAtWorld(x: number, z: number): number | null {
+  let surfaceY = -Infinity;
+  const samples = [
+    [0, 0],
+    [EXPLORE_AVATAR_RADIUS, 0],
+    [-EXPLORE_AVATAR_RADIUS, 0],
+    [0, EXPLORE_AVATAR_RADIUS],
+    [0, -EXPLORE_AVATAR_RADIUS],
+  ] as const;
+
+  for (const [dx, dz] of samples) {
+    const cellX = worldToGridX(x + dx);
+    const cellZ = worldToGridZ(z + dz);
+    const cellSurfaceY = getAvatarSurfaceYForCell(cellX, cellZ);
+
+    if (cellSurfaceY === null) {
+      return null;
+    }
+
+    surfaceY = Math.max(surfaceY, cellSurfaceY);
+  }
+
+  return Number.isFinite(surfaceY) ? surfaceY : null;
+}
+
+function resetAvatarToSpawn(): void {
+  for (let radius = 0; radius <= 24; radius += 1) {
+    for (let dx = -radius; dx <= radius; dx += 1) {
+      for (let dz = -radius; dz <= radius; dz += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) {
+          continue;
+        }
+
+        const x = EXPLORE_SPAWN.x + dx;
+        const z = EXPLORE_SPAWN.z + dz;
+        const worldX = gridToWorldX(x);
+        const worldZ = gridToWorldZ(z);
+        const surfaceY = getAvatarSurfaceYAtWorld(worldX, worldZ);
+
+        if (surfaceY !== null) {
+          avatarGroup.position.set(worldX, surfaceY, worldZ);
+          avatarGroup.rotation.y = exploreYaw;
+          return;
+        }
+      }
+    }
+  }
+
+  avatarGroup.position.set(0.5, 1, -15.5);
+}
+
+function ensureAvatarOnWalkableGround(): void {
+  const surfaceY = getAvatarSurfaceYAtWorld(avatarGroup.position.x, avatarGroup.position.z);
+  if (surfaceY === null) {
+    resetAvatarToSpawn();
+    return;
+  }
+
+  avatarGroup.position.y = surfaceY;
+}
+
+function syncExploreYawFromCamera(): void {
+  const dx = camera.position.x - avatarGroup.position.x;
+  const dz = camera.position.z - avatarGroup.position.z;
+
+  if (Math.abs(dx) + Math.abs(dz) > 0.001) {
+    exploreYaw = Math.atan2(dx, dz);
+  }
+}
+
+function updateExplorePointerDrag(event: PointerEvent): void {
+  if (!explorePointerDrag) {
+    return;
+  }
+
+  const dx = event.clientX - explorePointerDrag.x;
+  const dy = event.clientY - explorePointerDrag.y;
+  explorePointerDrag = { x: event.clientX, y: event.clientY };
+
+  exploreYaw -= dx * 0.006;
+  explorePitch = THREE.MathUtils.clamp(
+    explorePitch + dy * 0.004,
+    EXPLORE_CAMERA_MIN_PITCH,
+    EXPLORE_CAMERA_MAX_PITCH,
+  );
+}
+
+function normalizeExploreKey(key: string): string | null {
+  switch (key.toLowerCase()) {
+    case 'w':
+    case 'arrowup':
+      return 'forward';
+    case 's':
+    case 'arrowdown':
+      return 'back';
+    case 'a':
+    case 'arrowleft':
+      return 'left';
+    case 'd':
+    case 'arrowright':
+      return 'right';
+    case 'shift':
+      return 'run';
+    default:
+      return null;
+  }
+}
+
+function handleExploreKeyDown(event: KeyboardEvent): boolean {
+  if (activeTool !== 'explore') {
+    return false;
+  }
+
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    setTool('orbit');
+    showToast('Editor mode');
+    return true;
+  }
+
+  const exploreKey = normalizeExploreKey(event.key);
+  if (exploreKey) {
+    event.preventDefault();
+    exploreMoveKeys.add(exploreKey);
+  }
+
+  return true;
+}
+
+function updateExplore(delta: number): void {
+  if (activeTool !== 'explore') {
+    return;
+  }
+
+  const forwardAmount = Number(exploreMoveKeys.has('forward')) - Number(exploreMoveKeys.has('back'));
+  const strafeAmount = Number(exploreMoveKeys.has('right')) - Number(exploreMoveKeys.has('left'));
+  exploreMoveVector.set(0, 0);
+
+  if (forwardAmount !== 0 || strafeAmount !== 0) {
+    const forwardX = -Math.sin(exploreYaw);
+    const forwardZ = -Math.cos(exploreYaw);
+    const rightX = Math.cos(exploreYaw);
+    const rightZ = -Math.sin(exploreYaw);
+
+    exploreMoveVector.set(
+      forwardX * forwardAmount + rightX * strafeAmount,
+      forwardZ * forwardAmount + rightZ * strafeAmount,
+    ).normalize();
+
+    const speed = EXPLORE_WALK_SPEED * (exploreMoveKeys.has('run') ? EXPLORE_RUN_MULTIPLIER : 1);
+    moveAvatar(exploreMoveVector.x * speed * delta, exploreMoveVector.y * speed * delta, delta);
+    avatarGroup.rotation.y = THREE.MathUtils.lerp(
+      avatarGroup.rotation.y,
+      Math.atan2(-exploreMoveVector.x, -exploreMoveVector.y),
+      Math.min(1, delta * 12),
+    );
+  }
+
+  updateExploreCamera(delta);
+}
+
+function moveAvatar(dx: number, dz: number, delta: number): void {
+  const nextX = avatarGroup.position.x + dx;
+  let surfaceY = getAvatarSurfaceYAtWorld(nextX, avatarGroup.position.z);
+
+  if (surfaceY !== null) {
+    avatarGroup.position.x = nextX;
+  }
+
+  const nextZ = avatarGroup.position.z + dz;
+  surfaceY = getAvatarSurfaceYAtWorld(avatarGroup.position.x, nextZ);
+
+  if (surfaceY !== null) {
+    avatarGroup.position.z = nextZ;
+  }
+
+  surfaceY = getAvatarSurfaceYAtWorld(avatarGroup.position.x, avatarGroup.position.z);
+  if (surfaceY !== null) {
+    avatarGroup.position.y = THREE.MathUtils.lerp(avatarGroup.position.y, surfaceY, Math.min(1, delta * 10));
+  }
+}
+
+function updateExploreCamera(delta: number): void {
+  const targetHeight = 1.55;
+  const horizontalDistance = Math.cos(explorePitch) * exploreCameraDistance;
+  exploreCameraTarget.set(avatarGroup.position.x, avatarGroup.position.y + targetHeight, avatarGroup.position.z);
+  exploreDesiredCameraPosition.set(
+    avatarGroup.position.x + Math.sin(exploreYaw) * horizontalDistance,
+    avatarGroup.position.y + Math.sin(explorePitch) * exploreCameraDistance + 1.8,
+    avatarGroup.position.z + Math.cos(exploreYaw) * horizontalDistance,
+  );
+
+  camera.position.lerp(exploreDesiredCameraPosition, Math.min(1, delta * 9));
+  camera.lookAt(exploreCameraTarget);
 }
 
 function snapshot(): VoxelSnapshot {
@@ -1658,6 +2004,8 @@ function generateCleanMap(): void {
   for (const [x, z, leafType] of treeCells) {
     addSimpleTree(x, z, leafType);
   }
+
+  resetAvatarToSpawn();
 }
 
 function addInitialWaterFeatures(): void {
@@ -2113,6 +2461,9 @@ function rebuildScene(): void {
 
   renderLookup.push(groundPlane);
   rebuildVoxelLights(lightVoxels);
+  if (activeTool === 'explore') {
+    ensureAvatarOnWalkableGround();
+  }
   updateHover();
 }
 
@@ -2265,7 +2616,7 @@ function updateHover(): void {
     return;
   }
 
-  if (activeTool === 'pan' || activeTool === 'orbit' || activeTool === 'zoom') {
+  if (activeTool === 'pan' || activeTool === 'orbit' || activeTool === 'zoom' || activeTool === 'explore') {
     previewMesh.visible = false;
     presetPreviewGroup.visible = false;
     return;
@@ -2327,7 +2678,7 @@ function targetFromIntersection(intersection: THREE.Intersection, tool: Tool, re
 }
 
 function applyPointerEdit(tool: Tool, replaceTarget = false): void {
-  if (tool === 'pan' || tool === 'orbit' || tool === 'zoom') {
+  if (tool === 'pan' || tool === 'orbit' || tool === 'zoom' || tool === 'explore') {
     return;
   }
 
@@ -2731,11 +3082,19 @@ function rebuildPresetPreview(): void {
 }
 
 function setTool(tool: Tool): void {
+  const wasExploring = activeTool === 'explore';
   activeTool = tool;
   if (tool !== 'stamp') {
     selectedPresetId = null;
     rebuildPresetPreview();
   }
+
+  if (tool === 'explore') {
+    enterExploreMode();
+  } else if (wasExploring) {
+    exitExploreMode();
+  }
+
   applyControlMode(tool);
   updateUi();
   updateHover();
@@ -2757,6 +3116,15 @@ function activatePlaceTool(): void {
 }
 
 function applyControlMode(tool: Tool): void {
+  controls.enabled = tool !== 'explore';
+
+  if (tool === 'explore') {
+    renderer.domElement.style.cursor = 'grab';
+    previewMesh.visible = false;
+    presetPreviewGroup.visible = false;
+    return;
+  }
+
   if (tool === 'pan') {
     controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
     renderer.domElement.style.cursor = 'grab';
@@ -2773,16 +3141,41 @@ function applyControlMode(tool: Tool): void {
   renderer.domElement.style.cursor = tool === 'erase' ? 'not-allowed' : 'crosshair';
 }
 
+function enterExploreMode(): void {
+  pointerDown = null;
+  replaceTargetMode = false;
+  hoverVoxel = null;
+  explorePointerDrag = null;
+  previewMesh.visible = false;
+  presetPreviewGroup.visible = false;
+  avatarGroup.visible = true;
+  ensureAvatarOnWalkableGround();
+  syncExploreYawFromCamera();
+  updateExploreCamera(1);
+  document.body.classList.add('is-exploring');
+  showToast('Explore mode: WASD move, drag to look, Esc returns');
+}
+
+function exitExploreMode(): void {
+  exploreMoveKeys.clear();
+  explorePointerDrag = null;
+  avatarGroup.visible = false;
+  document.body.classList.remove('is-exploring');
+  controls.target.set(avatarGroup.position.x, avatarGroup.position.y + 1.2, avatarGroup.position.z);
+}
+
 function updateUi(): void {
   const preset = getSelectedPreset();
   const toolLabel = activeTool[0].toUpperCase() + activeTool.slice(1);
-  statusLine.textContent = activeTool === 'stamp' && preset
-    ? `Stamp - ${preset.label} (${presetRotation * 90} deg, Ctrl replace)`
-    : `${toolLabel} - ${BLOCKS[selectedType].label}${activeTool === 'paint' ? ' (Ctrl replace)' : ''}`;
+  statusLine.textContent = activeTool === 'explore'
+    ? 'Explore mode'
+    : activeTool === 'stamp' && preset
+      ? `Stamp - ${preset.label} (${presetRotation * 90} deg, Ctrl replace)`
+      : `${toolLabel} - ${BLOCKS[selectedType].label}${activeTool === 'paint' ? ' (Ctrl replace)' : ''}`;
   selectedBlock.textContent = BLOCKS[selectedType].label;
   blockCount.textContent = voxelData.size.toLocaleString();
   brushValue.value = String(brushSize);
-  brushInput.disabled = activeTool === 'stamp' || activeTool === 'pan' || activeTool === 'orbit' || activeTool === 'zoom';
+  brushInput.disabled = activeTool === 'stamp' || activeTool === 'pan' || activeTool === 'orbit' || activeTool === 'zoom' || activeTool === 'explore';
   activeThemeLabel.textContent = PRESET_THEMES.find((theme) => theme.id === activeTheme)?.label ?? 'Theme';
 
   document.querySelector('#placeTool')?.classList.toggle('is-active', activeTool === 'stamp');
@@ -2792,6 +3185,15 @@ function updateUi(): void {
   document.querySelector('#panTool')?.classList.toggle('is-active', activeTool === 'pan');
   document.querySelector('#orbitTool')?.classList.toggle('is-active', activeTool === 'orbit');
   document.querySelector('#zoomTool')?.classList.toggle('is-active', activeTool === 'zoom');
+
+  const exploreButton = document.querySelector<HTMLButtonElement>('#exploreButton');
+  if (exploreButton) {
+    const exploring = activeTool === 'explore';
+    exploreButton.classList.toggle('is-active', exploring);
+    exploreButton.setAttribute('aria-pressed', String(exploring));
+    exploreButton.setAttribute('aria-label', exploring ? 'Return to editor' : 'Explore map');
+    exploreButton.title = exploring ? 'Return to editor' : 'Explore map';
+  }
 
   document.querySelector<HTMLButtonElement>('#undoButton')!.disabled = undoStack.length === 0;
   document.querySelector<HTMLButtonElement>('#redoButton')!.disabled = redoStack.length === 0;
@@ -2841,7 +3243,11 @@ function updateGridTone(): void {
 }
 
 function showInstructions(): void {
-  showToast('Place objects, R rotates, Ctrl-click replaces, right-click erases');
+  showToast('Explore: WASD moves, drag looks, Esc edits. Build: R rotates, Ctrl replaces');
+}
+
+function toggleExploreMode(): void {
+  setTool(activeTool === 'explore' ? 'orbit' : 'explore');
 }
 
 function toggleMusicPlayback(): void {
@@ -3050,8 +3456,14 @@ function resize(): void {
 }
 
 function animate(): void {
-  controls.update();
-  updateHover();
+  const delta = Math.min(clock.getDelta(), 0.05);
+  if (activeTool === 'explore') {
+    updateExplore(delta);
+  } else {
+    controls.update();
+    updateHover();
+  }
+
   if (nightModeEnabled) {
     composer.render();
   } else {
