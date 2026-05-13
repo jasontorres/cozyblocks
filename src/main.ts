@@ -14,10 +14,14 @@ const MIN_HEIGHT = -2;
 const STORAGE_KEY = 'cozy-blocks-city-v1';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const MUSIC_TRACKS = ['/audio/midnight-study-1.mp3', '/audio/midnight-study-2.mp3'] as const;
+const EDITOR_CAMERA_POSITION = new THREE.Vector3(72, 58, 84);
+const EDITOR_CAMERA_TARGET = new THREE.Vector3(0, 2.2, 0);
 const EXPLORE_SPAWN = { x: 48, z: 32 };
 const EXPLORE_AVATAR_RADIUS = 0.42;
 const EXPLORE_WALK_SPEED = 8.4;
 const EXPLORE_RUN_MULTIPLIER = 1.55;
+const EXPLORE_JUMP_VELOCITY = 9.2;
+const EXPLORE_GRAVITY = 24;
 const EXPLORE_CAMERA_MIN_DISTANCE = 7;
 const EXPLORE_CAMERA_MAX_DISTANCE = 18;
 const EXPLORE_CAMERA_MIN_PITCH = 0.22;
@@ -1167,6 +1171,8 @@ let explorePointerDrag: { x: number; y: number } | null = null;
 let exploreYaw = Math.PI * 0.82;
 let explorePitch = 0.48;
 let exploreCameraDistance = 12;
+let exploreVerticalVelocity = 0;
+let exploreGrounded = true;
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -1214,7 +1220,7 @@ const nightSkyTexture = createSkyTexture('night');
 scene.background = daySkyTexture;
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 260);
-camera.position.set(72, 58, 84);
+camera.position.copy(EDITOR_CAMERA_POSITION);
 
 const composer = new EffectComposer(renderer);
 const renderPass = new RenderPass(scene, camera);
@@ -1226,7 +1232,7 @@ composer.addPass(new OutputPass());
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.target.set(0, 2.2, 0);
+controls.target.copy(EDITOR_CAMERA_TARGET);
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.minDistance = 14;
 controls.maxDistance = 172;
@@ -1715,6 +1721,8 @@ function resetAvatarToSpawn(): void {
         if (surfaceY !== null) {
           avatarGroup.position.set(worldX, surfaceY, worldZ);
           avatarGroup.rotation.y = exploreYaw;
+          exploreVerticalVelocity = 0;
+          exploreGrounded = true;
           return;
         }
       }
@@ -1722,6 +1730,8 @@ function resetAvatarToSpawn(): void {
   }
 
   avatarGroup.position.set(0.5, 1, -15.5);
+  exploreVerticalVelocity = 0;
+  exploreGrounded = true;
 }
 
 function ensureAvatarOnWalkableGround(): void {
@@ -1732,6 +1742,8 @@ function ensureAvatarOnWalkableGround(): void {
   }
 
   avatarGroup.position.y = surfaceY;
+  exploreVerticalVelocity = 0;
+  exploreGrounded = true;
 }
 
 function syncExploreYawFromCamera(): void {
@@ -1762,6 +1774,9 @@ function updateExplorePointerDrag(event: PointerEvent): void {
 
 function normalizeExploreKey(key: string): string | null {
   switch (key.toLowerCase()) {
+    case ' ':
+    case 'spacebar':
+      return 'jump';
     case 'w':
     case 'arrowup':
       return 'forward';
@@ -1793,10 +1808,19 @@ function handleExploreKeyDown(event: KeyboardEvent): boolean {
     return true;
   }
 
+  if ((event.code === 'Space' || normalizeExploreKey(event.key) === 'jump') && exploreGrounded) {
+    event.preventDefault();
+    exploreVerticalVelocity = EXPLORE_JUMP_VELOCITY;
+    exploreGrounded = false;
+    return true;
+  }
+
   const exploreKey = normalizeExploreKey(event.key);
   if (exploreKey) {
     event.preventDefault();
-    exploreMoveKeys.add(exploreKey);
+    if (exploreKey !== 'jump') {
+      exploreMoveKeys.add(exploreKey);
+    }
   }
 
   return true;
@@ -1831,6 +1855,7 @@ function updateExplore(delta: number): void {
     );
   }
 
+  updateAvatarVertical(delta);
   updateExploreCamera(delta);
 }
 
@@ -1850,8 +1875,33 @@ function moveAvatar(dx: number, dz: number, delta: number): void {
   }
 
   surfaceY = getAvatarSurfaceYAtWorld(avatarGroup.position.x, avatarGroup.position.z);
-  if (surfaceY !== null) {
-    avatarGroup.position.y = THREE.MathUtils.lerp(avatarGroup.position.y, surfaceY, Math.min(1, delta * 10));
+  if (surfaceY === null) {
+    resetAvatarToSpawn();
+  }
+}
+
+function updateAvatarVertical(delta: number): void {
+  const surfaceY = getAvatarSurfaceYAtWorld(avatarGroup.position.x, avatarGroup.position.z);
+  if (surfaceY === null) {
+    resetAvatarToSpawn();
+    return;
+  }
+
+  if (exploreGrounded && avatarGroup.position.y <= surfaceY + 0.01) {
+    avatarGroup.position.y = surfaceY;
+    exploreVerticalVelocity = Math.max(0, exploreVerticalVelocity);
+    return;
+  }
+
+  exploreVerticalVelocity -= EXPLORE_GRAVITY * delta;
+  avatarGroup.position.y += exploreVerticalVelocity * delta;
+
+  if (avatarGroup.position.y <= surfaceY) {
+    avatarGroup.position.y = surfaceY;
+    exploreVerticalVelocity = 0;
+    exploreGrounded = true;
+  } else {
+    exploreGrounded = false;
   }
 }
 
@@ -3153,15 +3203,19 @@ function enterExploreMode(): void {
   syncExploreYawFromCamera();
   updateExploreCamera(1);
   document.body.classList.add('is-exploring');
-  showToast('Explore mode: WASD move, drag to look, Esc returns');
+  showToast('Explore: WASD move, Space jump, Esc returns');
 }
 
 function exitExploreMode(): void {
   exploreMoveKeys.clear();
   explorePointerDrag = null;
+  exploreVerticalVelocity = 0;
+  exploreGrounded = true;
   avatarGroup.visible = false;
   document.body.classList.remove('is-exploring');
-  controls.target.set(avatarGroup.position.x, avatarGroup.position.y + 1.2, avatarGroup.position.z);
+  camera.position.copy(EDITOR_CAMERA_POSITION);
+  controls.target.copy(EDITOR_CAMERA_TARGET);
+  controls.update();
 }
 
 function updateUi(): void {
@@ -3243,7 +3297,7 @@ function updateGridTone(): void {
 }
 
 function showInstructions(): void {
-  showToast('Explore: WASD moves, drag looks, Esc edits. Build: R rotates, Ctrl replaces');
+  showToast('Explore: WASD moves, Space jumps, drag looks, Esc edits');
 }
 
 function toggleExploreMode(): void {
