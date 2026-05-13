@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cozy Blocks</title>
+  </head>
+  <body>
+    <canvas id="scene" aria-label="Cozy Blocks editor"></canvas>
+
+    <main class="studio-shell">
+      <section class="title-card" aria-label="Cozy Blocks status">
+        <span class="seal" aria-hidden="true">CB</span>
+        <div class="title-copy">
+          <span class="brand-name">Cozy Blocks</span>
+          <p id="statusLine">Paint - London brick</p>
+        </div>
+      </section>
+
+      <section class="world-switcher" aria-label="World controls">
+        <div class="theme-tabs" id="themeTabs" role="tablist" aria-label="Preset themes"></div>
+        <button class="icon-button" id="newMapButton" type="button" aria-label="New map" title="New map">
+          <i data-lucide="file-plus-2"></i>
+        </button>
+        <button class="icon-button" id="instructionsButton" type="button" aria-label="Instructions" title="Instructions">
+          <i data-lucide="circle-help"></i>
+        </button>
+        <button class="icon-button icon-button-swap" id="musicPlayButton" type="button" aria-label="Play music" aria-pressed="false" title="Play music">
+          <i class="play-icon" data-lucide="play"></i>
+          <i class="pause-icon" data-lucide="pause"></i>
+        </button>
+        <button class="icon-button icon-button-swap" id="musicMuteButton" type="button" aria-label="Mute music" aria-pressed="false" title="Mute music">
+          <i class="volume-icon" data-lucide="volume-2"></i>
+          <i class="muted-icon" data-lucide="volume-x"></i>
+        </button>
+      </section>
+
+      <nav class="tool-rail" role="toolbar" aria-label="Editor tools">
+        <button class="rail-button is-active" id="placeTool" type="button" aria-label="Place" title="Place">
+          <i data-lucide="boxes"></i>
+          <span>Place</span>
+        </button>
+        <button class="rail-button" id="paintTool" type="button" aria-label="Paint" title="Paint">
+          <i data-lucide="paintbrush"></i>
+          <span>Paint</span>
+        </button>
+        <button class="rail-button" id="eraseTool" type="button" aria-label="Erase" title="Erase">
+          <i data-lucide="eraser"></i>
+          <span>Erase</span>
+        </button>
+        <button class="rail-button" id="sampleTool" type="button" aria-label="Select" title="Select">
+          <i data-lucide="scan-dashed"></i>
+          <span>Select</span>
+        </button>
+        <button class="rail-button" id="panTool" type="button" aria-label="Pan" title="Pan">
+          <i data-lucide="hand"></i>
+          <span>Pan</span>
+        </button>
+        <button class="rail-button" id="orbitTool" type="button" aria-label="Orbit" title="Orbit">
+          <i data-lucide="rotate-3d"></i>
+          <span>Orbit</span>
+        </button>
+        <button class="rail-button" id="zoomTool" type="button" aria-label="Zoom" title="Zoom">
+          <i data-lucide="zoom-in"></i>
+          <span>Zoom</span>
+        </button>
+      </nav>
+
+      <section class="asset-dock" aria-label="Voxel assets">
+        <div class="dock-head">
+          <div class="category-tabs" id="categoryTabs" role="tablist" aria-label="Asset categories"></div>
+          <div class="dock-stats">
+            <span id="activeThemeLabel">London</span>
+            <span id="selectedBlock">London brick</span>
+            <span><strong id="blockCount">0</strong> blocks</span>
+          </div>
+        </div>
+        <div class="asset-strip" id="assetGrid" aria-label="Assets"></div>
+      </section>
+
+      <aside class="scene-controls" aria-label="Scene controls">
+        <div class="time-row">
+          <i data-lucide="sun"></i>
+          <span id="timeLabel">10:42</span>
+          <button class="icon-button" id="rotatePresetButton" type="button" aria-label="Rotate object" title="Rotate object">
+            <i data-lucide="rotate-cw"></i>
+          </button>
+          <button class="icon-button" id="resetButton" type="button" aria-label="Regenerate city" title="Regenerate city">
+            <i data-lucide="rotate-ccw"></i>
+          </button>
+        </div>
+        <input class="sun-slider" id="timeSlider" type="range" min="0" max="24" step="0.25" value="10.7" aria-label="Sun time" />
+
+        <label class="brush-control">
+          <span>Brush</span>
+          <input id="brushSize" type="range" min="1" max="3" value="1" />
+          <output id="brushValue">1</output>
+        </label>
+
+        <button class="toggle-row is-on" id="ambientToggle" type="button" aria-pressed="true">
+          <span>Ambient Occlusion</span>
+          <strong>ON</strong>
+        </button>
+        <button class="toggle-row" id="nightToggle" type="button" aria-pressed="false">
+          <span>Night Mode</span>
+          <strong>OFF</strong>
+        </button>
+        <button class="toggle-row is-on" id="gridToggle" type="button" aria-pressed="true">
+          <span>Grid</span>
+          <strong>ON</strong>
+        </button>
+        <button class="toggle-row is-on" id="bordersToggle" type="button" aria-pressed="true">
+          <span>Borders</span>
+          <strong>ON</strong>
+        </button>
+
+        <details class="layers-panel" open>
+          <summary>
+            <i data-lucide="layers"></i>
+            <span>Layers</span>
+          </summary>
+          <div class="file-actions">
+            <button class="icon-button" id="undoButton" type="button" aria-label="Undo" title="Undo">
+              <i data-lucide="undo-2"></i>
+            </button>
+            <button class="icon-button" id="redoButton" type="button" aria-label="Redo" title="Redo">
+              <i data-lucide="redo-2"></i>
+            </button>
+            <button class="icon-button" id="saveButton" type="button" aria-label="Save" title="Save">
+              <i data-lucide="save"></i>
+            </button>
+            <button class="icon-button" id="loadButton" type="button" aria-label="Load" title="Load">
+              <i data-lucide="folder-open"></i>
+            </button>
+            <button class="icon-button" id="exportButton" type="button" aria-label="Export JSON" title="Export JSON">
+              <i data-lucide="download"></i>
+            </button>
+            <button class="icon-button" id="importButton" type="button" aria-label="Import JSON" title="Import JSON">
+              <i data-lucide="upload"></i>
+            </button>
+          </div>
+        </details>
+      </aside>
+    </main>
+
+    <input id="fileInput" type="file" accept="application/json,.json" hidden />
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
